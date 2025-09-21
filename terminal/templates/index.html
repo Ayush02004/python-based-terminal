@@ -1,0 +1,203 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Sandbox Terminal (demo)</title>
+
+  <!-- xterm core CSS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+
+  <style>
+    /* Make the page and container fill the viewport */
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #0b0b0b;
+      color: #fff;
+      font-family: monospace;
+    }
+
+    /* Header bar */
+    header {
+      height: 40px;
+      line-height: 40px;
+      padding: 0 12px;
+      background: #0a0a0a;
+      color: #eee;
+      border-bottom: 1px solid #111;
+      box-sizing: border-box;
+      font-size: 14px;
+    }
+
+    /* Terminal area fills remaining viewport under header */
+    #term-wrapper {
+      height: calc(100vh - 40px); /* header height subtracted */
+      display: block;
+      box-sizing: border-box;
+      background: #000;
+      padding: 0;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    /* xterm will be placed inside #term and fill it */
+    #term {
+      height: 100%;
+      width: 100%;
+    }
+
+    /* small responsive tweaks */
+    @media (max-width: 480px) {
+      header { font-size: 12px; height: 36px; line-height: 36px; }
+      #term-wrapper { height: calc(100vh - 36px); }
+    }
+  </style>
+</head>
+<body>
+  <header>Sandboxed Terminal — demo</header>
+  <div id="term-wrapper">
+    <div id="term"></div>
+  </div>
+
+  <!-- xterm.js core -->
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+  <!-- Fit addon (use a specific version if you want stability) -->
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+
+  <script>
+    (function () {
+      const { Terminal } = window;
+      const { FitAddon } = window; // FitAddon loaded from CDN
+
+      if (!Terminal) {
+        document.body.innerText = "xterm.js not available (check network / CDN).";
+        return;
+      }
+
+      // Create terminal with sensible options
+      const term = new Terminal({
+        convertEol: true,
+        cursorBlink: true,
+        fontFamily: "monospace",
+        fontSize: 14,
+        theme: {
+          background: '#000000',
+          foreground: '#ffffff'
+        }
+      });
+
+      const fitAddon = new FitAddon.FitAddon ? new FitAddon.FitAddon() : null;
+      if (fitAddon) term.loadAddon(fitAddon);
+
+      const termContainer = document.getElementById('term');
+      term.open(termContainer);
+
+      // If FitAddon is available, call fit to size terminal to container
+      function doFitAndNotify() {
+        if (fitAddon && typeof fitAddon.fit === 'function') {
+          try {
+            fitAddon.fit();
+          } catch (e) {
+            // ignore fit errors
+          }
+        } else {
+          // If no fit addon, try forcing terminal resize by writing a newline.
+          // (Not ideal, but a fallback)
+          try { term.resize(term.cols || 80, term.rows || 24); } catch (e) {}
+        }
+        // After fitting, send rows/cols to server when connected
+        sendResize();
+      }
+
+      // Build websocket URL (wss if https)
+      const loc = window.location;
+      const protocol = (loc.protocol === 'https:') ? 'wss' : 'ws';
+      const wsUrl = protocol + '://' + loc.host + '/ws';
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+
+      // Send resize message to server (JSON)
+      function sendResize() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            const msg = JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows });
+            ws.send(msg);
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+
+      ws.onopen = () => {
+        term.writeln('Connected to remote sandboxed terminal.\r\n');
+        // give the terminal a tick, then fit and notify
+        setTimeout(doFitAndNotify, 50);
+      };
+
+      ws.onmessage = (ev) => {
+        // Support ArrayBuffer / Blob / text
+        if (ev.data instanceof Blob) {
+          ev.data.arrayBuffer().then(buf => {
+            const decoded = new TextDecoder().decode(buf);
+            term.write(decoded);
+          });
+        } else if (ev.data instanceof ArrayBuffer) {
+          const decoded = new TextDecoder().decode(ev.data);
+          term.write(decoded);
+        } else {
+          term.write(ev.data);
+        }
+      };
+
+      ws.onclose = () => {
+        term.writeln('\r\n*** disconnected from server ***');
+      };
+
+      ws.onerror = (e) => {
+        // optionally show errors
+        // term.writeln('\r\n*** websocket error ***');
+      };
+
+      // Forward keystrokes to server
+      term.onData(data => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(data); } catch (e) {}
+        }
+      });
+
+      // Fire resizing logic when browser window changes
+      window.addEventListener('resize', () => {
+        // small debounce
+        if (window._term_resize_timer) clearTimeout(window._term_resize_timer);
+        window._term_resize_timer = setTimeout(() => {
+          doFitAndNotify();
+        }, 80);
+      });
+
+      // If xterm supports onResize (modern versions), use it to notify server
+      if (typeof term.onResize === 'function') {
+        try {
+          term.onResize(() => {
+            sendResize();
+          });
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      // Also periodically ensure initial sizing — stops awkward initial black area
+      let tries = 0;
+      const initialInterval = setInterval(() => {
+        doFitAndNotify();
+        tries += 1;
+        if (tries > 8) clearInterval(initialInterval);
+      }, 150);
+
+      // close ws on unload
+      window.addEventListener('beforeunload', () => {
+        try { ws.close(); } catch (e) {}
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -362,4 +362,203 @@ class CommandsExecutor:
 
     # ---------- Help ----------
     def help(self, args):
-        print("Type 'help' for supported commands (same as earlier).")
+        """Context-sensitive help:
+        - help               -> list commands with short descriptions
+        - help <cmd>         -> detailed help for <cmd>
+        - <cmd> --help/-h    -> handled by CLI dispatcher and calls this method
+        """
+        # Add near the top (after imports)
+        HELP_DOCS = {
+            "ls": {
+                "short": "List directory contents.",
+                "usage": "ls [PATH]",
+                "description": "List files and directories. If PATH is a file, prints the filename. "
+                            "Directories are printed with a trailing '/'.",
+                "options": ["No additional options implemented; use shell globs (e.g. *.py)"],
+                "examples": ["ls", "ls subdir", "ls *.py"],
+                "notes": "Output uses POSIX-style paths relative to the sandbox."
+            },
+            "cd": {
+                "short": "Change current directory (session only).",
+                "usage": "cd [PATH]",
+                "description": "Change the session's current working directory. Without PATH goes to sandbox root (/).",
+                "options": [],
+                "examples": ["cd demo/sub", "cd ..", "cd /  # go to sandbox root"],
+                "notes": "Path must remain inside the sandbox; attempts to escape are rejected."
+            },
+            "pwd": {
+                "short": "Print current working directory.",
+                "usage": "pwd",
+                "description": "Show current working directory, relative to sandbox root. Sandbox root = '/'.",
+                "options": [],
+                "examples": ["pwd"],
+                "notes": ""
+            },
+            "mkdir": {
+                "short": "Create directories.",
+                "usage": "mkdir [-p] DIR",
+                "description": "Create directory DIR. Use -p to create parent directories if necessary.",
+                "options": ["-p : create parent directories as needed"],
+                "examples": ["mkdir newdir", "mkdir -p a/b/c"],
+                "notes": ""
+            },
+            "rm": {
+                "short": "Remove file or directory.",
+                "usage": "rm [-r|-rf] PATH",
+                "description": "Remove a file or directory. Removing directories requires -r (or -rf).",
+                "options": ["-r, -rf : remove directories recursively"],
+                "examples": ["rm file.txt", "rm -r somedir"],
+                "notes": "No force-only flag beyond -r; directories without -r are refused to avoid accidents."
+            },
+            "touch": {
+                "short": "Create empty files or update timestamps.",
+                "usage": "touch FILE...",
+                "description": "Create empty files (or update their modification time if they exist).",
+                "options": [],
+                "examples": ["touch a.txt b.txt"],
+                "notes": ""
+            },
+            "cat": {
+                "short": "Print file contents.",
+                "usage": "cat FILE...",
+                "description": "Print contents of files to stdout. Files larger than ~100KB are not printed.",
+                "options": [],
+                "examples": ["cat README.md", "cat dir/a.txt dir/b.txt"],
+                "notes": "Large files are blocked from printing to keep terminal responsive."
+            },
+            "echo": {
+                "short": "Print text or redirect to a file.",
+                "usage": "echo [TEXT] [> FILE | >> FILE]",
+                "description": "Print TEXT to stdout. Use '>' to overwrite a file or '>>' to append.",
+                "options": ["> : overwrite file", ">> : append to file"],
+                "examples": ["echo hello", "echo hello > file.txt", "echo more >> file.txt"],
+                "notes": ""
+            },
+            "cp": {
+                "short": "Copy files.",
+                "usage": "cp SRC... DEST",
+                "description": "Copy file(s) to DEST. If multiple SRC are provided, DEST must be an existing directory.",
+                "options": ["Recursive copy for directories (-r) is NOT implemented."],
+                "examples": ["cp a.txt b.txt", "cp a.txt dir/"],
+                "notes": "Directories are skipped unless recursive feature is added."
+            },
+            "mv": {
+                "short": "Move/rename files.",
+                "usage": "mv SRC... DEST",
+                "description": "Move or rename files. For multiple SRC, DEST must be an existing directory.",
+                "options": [],
+                "examples": ["mv a.txt b.txt", "mv a.txt dir/"],
+                "notes": ""
+            },
+            "head": {
+                "short": "Show first lines of a file.",
+                "usage": "head [-nN] FILE",
+                "description": "Print the first N lines of FILE (default N=10).",
+                "options": ["-nN or -n N : number of lines to print"],
+                "examples": ["head file.txt", "head -n5 file.txt"],
+                "notes": ""
+            },
+            "tail": {
+                "short": "Show last lines of a file.",
+                "usage": "tail [-nN] FILE",
+                "description": "Print the last N lines of FILE (default N=10).",
+                "options": ["-nN or -n N : number of lines to print"],
+                "examples": ["tail file.txt", "tail -n20 file.txt"],
+                "notes": ""
+            },
+            "stat": {
+                "short": "Show file metadata.",
+                "usage": "stat PATH",
+                "description": "Display size, permissions, timestamps and other metadata for PATH.",
+                "options": [],
+                "examples": ["stat file.txt"],
+                "notes": ""
+            },
+            "chmod": {
+                "short": "Change file permissions (numeric).",
+                "usage": "chmod MODE PATH",
+                "description": "Change file permissions. MODE must be numeric (e.g. 644 or 755).",
+                "options": [],
+                "examples": ["chmod 644 file.txt"],
+                "notes": "On Windows some permission effects may be limited."
+            },
+            "find": {
+                "short": "Find files and directories.",
+                "usage": "find [PATH] [-name PATTERN]",
+                "description": "Walk directory tree starting at PATH (default '.') and optionally filter by -name PATTERN.",
+                "options": ["-name PATTERN : only show entries matching PATTERN (supports globbing)"],
+                "examples": ["find", "find . -name \"*.py\"", "find subdir -name test*"],
+                "notes": ""
+            },
+            "grep": {
+                "short": "Search files with a regex pattern.",
+                "usage": "grep PATTERN FILE...",
+                "description": "Search FILE(s) for PATTERN (Python regular expressions) and print matches as file:line:content.",
+                "options": [],
+                "examples": ["grep TODO src/*.py", "grep \"def\\s+main\" **/*.py"],
+                "notes": "Use quotes for patterns containing spaces or shell metacharacters."
+            },
+            "monitor": {
+                "short": "Show CPU/memory and top processes.",
+                "usage": "monitor | ps",
+                "description": "Display system CPU% and memory% and the top processes by CPU usage.",
+                "options": [],
+                "examples": ["monitor", "ps"],
+                "notes": "Requires psutil for full results. Install with: pip install psutil"
+            },
+            "help": {
+                "short": "Show help (this reference).",
+                "usage": "help [COMMAND]",
+                "description": "Show a list of commands when run without arguments, or detailed help for COMMAND when provided.",
+                "options": [],
+                "examples": ["help", "help ls"],
+                "notes": "Also supported: '<command> --help' or '<command> -h' to show that command's help."
+            },
+            "exit": {
+                "short": "Exit the terminal.",
+                "usage": "exit | quit",
+                "description": "Terminate the terminal session.",
+                "options": [],
+                "examples": ["exit"],
+                "notes": ""
+            },
+        }
+
+        # If no args: show compact list
+        if not args:
+            print("Available commands (type 'help <command>' for details):\n")
+            # Print commands in columns: name + short desc
+            names = sorted(HELP_DOCS.keys())
+            maxlen = max(len(n) for n in names)
+            for n in names:
+                short = HELP_DOCS.get(n, {}).get("short", "")
+                print(f"  {n.ljust(maxlen)}  - {short}")
+            return
+
+        # If args provided, show detailed help for each requested command
+        for cmd in args:
+            doc = HELP_DOCS.get(cmd)
+            if doc is None:
+                print(f"No help entry for '{cmd}'. Type 'help' to see available commands.")
+                continue
+
+            print(f"\n{cmd}  -  {doc.get('short','')}")
+            print(f"Usage: {doc.get('usage','')}")
+            if doc.get("description"):
+                print("\nDescription:")
+                for line in doc["description"].splitlines():
+                    print("  " + line)
+            if doc.get("options"):
+                if doc["options"]:
+                    print("\nOptions:")
+                    for opt in doc["options"]:
+                        print("  " + opt)
+            if doc.get("examples"):
+                print("\nExamples:")
+                for ex in doc["examples"]:
+                    print("  " + ex)
+            if doc.get("notes"):
+                print("\nNotes:")
+                for line in str(doc["notes"]).splitlines():
+                    print("  " + line)
+        print("")  # final newline for spacing
